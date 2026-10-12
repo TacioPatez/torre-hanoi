@@ -1,5 +1,6 @@
 import pygame
 import sys
+import colorsys
 
 # Inicialização do Pygame
 pygame.init()
@@ -28,12 +29,24 @@ fonte = pygame.font.SysFont(None, 36)
 fonte_grande = pygame.font.SysFont(None, 96)
 fonte_titulo = pygame.font.SysFont(None, 80)
 
-# Tela atual: "menu", "regras" ou "jogo"
+# Tela atual: "menu", "regras", "jogo", "demo_config" ou "demo"
 estado = "menu"
 
 # Quantidade de discos escolhida no menu (entre 3 e 5)
 MIN_DISCOS, MAX_DISCOS = 3, 5
 num_discos = 3
+
+# Demonstração automática (entre 3 e 15 discos)
+DEMO_MIN, DEMO_MAX = 3, 15
+demo_discos = 3
+demo_torres = {"A": [], "B": [], "C": []}
+demo_movimentos = []      # Lista de (origem, destino) da solução ótima
+demo_indice = 0           # Próximo movimento a executar
+demo_pausado = False
+demo_acumulador = 0.0     # Acumula frações de movimento entre frames
+demo_cores = {}
+VELOCIDADES = [1, 2, 5, 10, 30, 100, 500, 2000]  # Movimentos por segundo
+demo_vel_idx = 2
 
 # Estado Inicial do Jogo
 movimentos = 0
@@ -67,8 +80,20 @@ offset_x, offset_y = 0, 0 # Para o mouse segurar o disco no ponto exato do cliqu
 # Botões
 BOTAO_REINICIAR = pygame.Rect(LARGURA // 2 - 80, 540, 160, 40)
 BOTAO_MENU = pygame.Rect(LARGURA // 2 - 80 - 180, 540, 160, 40)
-BOTAO_INICIAR = pygame.Rect(LARGURA // 2 - 110, 280, 220, 50)
-BOTAO_REGRAS = pygame.Rect(LARGURA // 2 - 110, 350, 220, 50)
+BOTAO_INICIAR = pygame.Rect(LARGURA // 2 - 110, 220, 220, 50)
+BOTAO_DEMO = pygame.Rect(LARGURA // 2 - 110, 290, 220, 50)
+BOTAO_REGRAS = pygame.Rect(LARGURA // 2 - 110, 360, 220, 50)
+
+# Botões da demonstração
+BOTAO_DEMO_MENOS = pygame.Rect(LARGURA // 2 - 130, 260, 50, 50)
+BOTAO_DEMO_MAIS = pygame.Rect(LARGURA // 2 + 80, 260, 50, 50)
+BOTAO_DEMO_COMECAR = pygame.Rect(LARGURA // 2 - 110, 400, 220, 50)
+BOTAO_DEMO_VOLTAR = pygame.Rect(LARGURA // 2 - 110, 470, 220, 50)
+BOTAO_DEMO_MENU = pygame.Rect(20, 540, 110, 40)
+BOTAO_DEMO_PAUSAR = pygame.Rect(140, 540, 140, 40)
+BOTAO_DEMO_REINICIAR = pygame.Rect(290, 540, 140, 40)
+BOTAO_VEL_MENOS = pygame.Rect(480, 540, 40, 40)
+BOTAO_VEL_MAIS = pygame.Rect(740, 540, 40, 40)
 BOTAO_VOLTAR = pygame.Rect(LARGURA // 2 - 80, 520, 160, 40)
 BOTAO_MENOS = pygame.Rect(LARGURA // 2 - 130, 470, 50, 50)
 BOTAO_MAIS = pygame.Rect(LARGURA // 2 + 80, 470, 50, 50)
@@ -111,7 +136,36 @@ def desenhar_botao(rect, texto, cor=AZUL_ESCURO):
     surf = fonte.render(texto, True, BRANCO)
     tela.blit(surf, surf.get_rect(center=rect.center))
 
+def gerar_movimentos(n, origem, destino, auxiliar, lista):
+    """Gera a sequência ótima (2^n - 1 movimentos) da Torre de Hanói."""
+    if n == 0:
+        return
+    gerar_movimentos(n - 1, origem, auxiliar, destino, lista)
+    lista.append((origem, destino))
+    gerar_movimentos(n - 1, auxiliar, destino, origem, lista)
+
+def largura_disco_demo(tamanho):
+    """Largura do disco na demonstração (o maior sempre cabe entre os pinos)."""
+    return 30 + tamanho * (150 // demo_discos)
+
+def iniciar_demo():
+    """Prepara (ou reinicia) a demonstração com a quantidade de discos escolhida."""
+    global demo_torres, demo_movimentos, demo_indice, demo_pausado
+    global demo_acumulador, demo_cores
+    demo_torres = {"A": list(range(demo_discos, 0, -1)), "B": [], "C": []}
+    demo_movimentos = []
+    gerar_movimentos(demo_discos, "A", "C", "B", demo_movimentos)
+    demo_indice = 0
+    demo_pausado = False
+    demo_acumulador = 0.0
+    # Cores distribuídas pelo espectro, uma para cada tamanho de disco
+    demo_cores = {}
+    for t in range(1, demo_discos + 1):
+        r, g, b = colorsys.hsv_to_rgb((t - 1) / demo_discos * 0.85, 0.7, 0.95)
+        demo_cores[t] = (int(r * 255), int(g * 255), int(b * 255))
+
 clock = pygame.time.Clock()
+dt = 0
 
 while True:
     mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -127,6 +181,8 @@ while True:
                 if BOTAO_INICIAR.collidepoint(evento.pos):
                     iniciar_partida()
                     estado = "jogo"
+                elif BOTAO_DEMO.collidepoint(evento.pos):
+                    estado = "demo_config"
                 elif BOTAO_REGRAS.collidepoint(evento.pos):
                     estado = "regras"
                 elif BOTAO_MENOS.collidepoint(evento.pos):
@@ -141,6 +197,42 @@ while True:
                     estado = "menu"
             elif evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
                 estado = "menu"
+
+        # --- CONFIGURAÇÃO DA DEMONSTRAÇÃO ---
+        elif estado == "demo_config":
+            if evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
+                if BOTAO_DEMO_MENOS.collidepoint(evento.pos):
+                    demo_discos = max(DEMO_MIN, demo_discos - 1)
+                elif BOTAO_DEMO_MAIS.collidepoint(evento.pos):
+                    demo_discos = min(DEMO_MAX, demo_discos + 1)
+                elif BOTAO_DEMO_COMECAR.collidepoint(evento.pos):
+                    iniciar_demo()
+                    estado = "demo"
+                elif BOTAO_DEMO_VOLTAR.collidepoint(evento.pos):
+                    estado = "menu"
+            elif evento.type == pygame.KEYDOWN and evento.key == pygame.K_ESCAPE:
+                estado = "menu"
+
+        # --- DEMONSTRAÇÃO AUTOMÁTICA ---
+        elif estado == "demo":
+            if evento.type == pygame.MOUSEBUTTONDOWN and evento.button == 1:
+                if BOTAO_DEMO_MENU.collidepoint(evento.pos):
+                    estado = "menu"
+                elif BOTAO_DEMO_PAUSAR.collidepoint(evento.pos):
+                    demo_pausado = not demo_pausado
+                elif BOTAO_DEMO_REINICIAR.collidepoint(evento.pos):
+                    iniciar_demo()
+                elif BOTAO_VEL_MENOS.collidepoint(evento.pos):
+                    demo_vel_idx = max(0, demo_vel_idx - 1)
+                elif BOTAO_VEL_MAIS.collidepoint(evento.pos):
+                    demo_vel_idx = min(len(VELOCIDADES) - 1, demo_vel_idx + 1)
+            elif evento.type == pygame.KEYDOWN:
+                if evento.key == pygame.K_ESCAPE:
+                    estado = "menu"
+                elif evento.key == pygame.K_SPACE:
+                    demo_pausado = not demo_pausado
+                elif evento.key == pygame.K_r:
+                    iniciar_demo()
 
         # --- JOGO ---
         # 0. REINICIAR (tecla R)
@@ -223,6 +315,7 @@ while True:
         tela.blit(titulo, titulo.get_rect(center=(LARGURA // 2, 140)))
 
         desenhar_botao(BOTAO_INICIAR, "Iniciar", VERDE)
+        desenhar_botao(BOTAO_DEMO, "Demonstração")
         desenhar_botao(BOTAO_REGRAS, "Regras")
 
         rotulo = fonte.render("Número de discos", True, AZUL_ESCURO)
@@ -238,6 +331,61 @@ while True:
         for i, linha in enumerate(REGRAS):
             tela.blit(fonte.render(linha, True, AZUL_ESCURO), (50, 160 + i * 38))
         desenhar_botao(BOTAO_VOLTAR, "Voltar")
+
+    elif estado == "demo_config":
+        titulo = fonte_titulo.render("Demonstração", True, AZUL_ESCURO)
+        tela.blit(titulo, titulo.get_rect(center=(LARGURA // 2, 120)))
+        rotulo = fonte.render("Número de discos (3 a 15)", True, AZUL_ESCURO)
+        tela.blit(rotulo, rotulo.get_rect(center=(LARGURA // 2, 215)))
+        desenhar_botao(BOTAO_DEMO_MENOS, "-")
+        desenhar_botao(BOTAO_DEMO_MAIS, "+")
+        valor = fonte_titulo.render(str(demo_discos), True, AZUL_ESCURO)
+        tela.blit(valor, valor.get_rect(center=(LARGURA // 2, 285)))
+        minimo = fonte.render(f"Mínimo de movimentos: {2 ** demo_discos - 1}", True, CINZA)
+        tela.blit(minimo, minimo.get_rect(center=(LARGURA // 2, 345)))
+        desenhar_botao(BOTAO_DEMO_COMECAR, "Começar", VERDE)
+        desenhar_botao(BOTAO_DEMO_VOLTAR, "Voltar")
+
+    elif estado == "demo":
+        # Avança os movimentos de acordo com a velocidade escolhida
+        if not demo_pausado and demo_indice < len(demo_movimentos):
+            demo_acumulador += dt / 1000 * VELOCIDADES[demo_vel_idx]
+            while demo_acumulador >= 1 and demo_indice < len(demo_movimentos):
+                origem, destino = demo_movimentos[demo_indice]
+                demo_torres[destino].append(demo_torres[origem].pop())
+                demo_indice += 1
+                demo_acumulador -= 1
+            if demo_indice >= len(demo_movimentos):
+                demo_acumulador = 0
+
+        concluido = demo_indice >= len(demo_movimentos)
+        tela.blit(fonte.render(f"Movimentos: {demo_indice} / {len(demo_movimentos)}", True, AZUL_ESCURO), (20, 20))
+        tela.blit(fonte.render(f"Discos: {demo_discos}", True, CINZA), (LARGURA - 170, 20))
+        if concluido:
+            tela.blit(fonte.render("Concluído!", True, VERDE), (20, 60))
+
+        # Base e Pinos
+        pygame.draw.rect(tela, CINZA, (100, 500, 600, 20))
+        for pino_x in CENTROS_X.values():
+            pygame.draw.rect(tela, CINZA, (pino_x - 10, 280, 20, 220))
+
+        # Discos (altura e largura se ajustam à quantidade de discos)
+        altura_d = min(ALTURA_DISCO, 210 // demo_discos)
+        for pino, discos in demo_torres.items():
+            for indice, tamanho in enumerate(discos):
+                largura = largura_disco_demo(tamanho)
+                x = CENTROS_X[pino] - (largura // 2)
+                y = CHAO_Y - ((indice + 1) * altura_d)
+                pygame.draw.rect(tela, demo_cores[tamanho], (x, y, largura, altura_d), border_radius=4)
+
+        # Controles
+        desenhar_botao(BOTAO_DEMO_MENU, "Menu")
+        desenhar_botao(BOTAO_DEMO_PAUSAR, "Continuar" if demo_pausado else "Pausar")
+        desenhar_botao(BOTAO_DEMO_REINICIAR, "Reiniciar")
+        desenhar_botao(BOTAO_VEL_MENOS, "-")
+        desenhar_botao(BOTAO_VEL_MAIS, "+")
+        vel = fonte.render(f"{VELOCIDADES[demo_vel_idx]} mov/s", True, AZUL_ESCURO)
+        tela.blit(vel, vel.get_rect(center=((BOTAO_VEL_MENOS.right + BOTAO_VEL_MAIS.left) // 2, 560)))
 
     else:
         # Textos (Timer e Contador)
@@ -285,4 +433,4 @@ while True:
         desenhar_botao(BOTAO_MENU, "Menu")
 
     pygame.display.flip()
-    clock.tick(60)
+    dt = clock.tick(60)
